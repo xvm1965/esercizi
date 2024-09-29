@@ -7,25 +7,38 @@ from torch.utils.data import DataLoader
 from datasets import load_dataset
 from transformers import AutoTokenizer, DataCollatorWithPadding
 import time
+import math
 
-raw_datasets = load_dataset("SetFit/mrpc")     # carica il dataset
+
+raw_datasets = load_dataset("glue", "mrpc")     # carica il dataset
 checkpoint = "bert-base-uncased"               # carica il modello
 tokenizer = AutoTokenizer.from_pretrained(checkpoint) # carica il tokenizer
 num_epochs = 3 # imposta il numero di loop di training con lo stesso dataset
 batch_size=8 # dimensione del batch
-num_batches = raw_datasets["train"].num_rows//batch_size # calcola il numero di batches
+num_batches = math.ceil(raw_datasets["train"].num_rows / batch_size)  # calcola il numero di batches arrotonda per eccesso
 num_steps = num_batches * num_epochs # calcola il numero di steps 
 
 
 def tokenize_function(example):
-    return tokenizer(example["text1"], example["text2"], truncation=True)
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True, padding=True)
 
 
 start_time=time.time()
 tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
 pre_tokenize_tokenization_time=time.time()-start_time
 
-input ("\n\n premi un tasto ....")
+# DataLoader con tokenizzazione al volo
+start_time=time.time()
+on_fly_train_dataloader = DataLoader(
+    raw_datasets["train"], shuffle=True, batch_size=batch_size, collate_fn=lambda x: tokenizer(
+        [item["sentence1"] for item in x], [item["sentence2"] for item in x], 
+        padding=True, truncation=True, return_tensors="pt"
+    )
+)
+on_fly_tokenization_time=time.time()-start_time
+
+print(f"\n\n tempo richiesto per la tokenizzazione totale : {pre_tokenize_tokenization_time:.5f}")
+print(f" tempo richiesto per il setup dei dataloder del sistema con tokenizzazione al volo: {on_fly_tokenization_time:.5f}")
 
 pre_tokenize_data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
@@ -35,33 +48,53 @@ tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
 tokenized_datasets.set_format("torch")
 pre_tokenize_arrange_column_time=time.time()-start_time
 
+print(f" tempo richiesto per la normalizzazione di tokenized_datasets: {pre_tokenize_arrange_column_time:.5f}")
+
+start_time=time.time()
 pre_tokenize_train_dataloader = DataLoader(
-    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=pre_tokenize_data_collator
+    tokenized_datasets["train"], shuffle=True, batch_size=batch_size, collate_fn=pre_tokenize_data_collator
 )
 pre_tokenize_eval_dataloader = DataLoader(
-    tokenized_datasets["validation"], batch_size=8, collate_fn=pre_tokenize_data_collator
+    tokenized_datasets["validation"], batch_size=batch_size, collate_fn=pre_tokenize_data_collator
 )
+pre_tokenize_dataloader_setup_time=time.time()-start_time
+print(f" tempo richiesto per il setup dei dataloder del sistema con pre tokenizzazione: {pre_tokenize_dataloader_setup_time:.5f}")
+print(f"type(pre_tokenize_train_dataloader): {type(pre_tokenize_train_dataloader)}")
 
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 optimizer = AdamW(model.parameters(), lr=5e-5)
 
-num_training_steps = num_epochs * len(pre_tokenize_train_dataloader) # calcola il numero di steps
 
 lr_scheduler = get_scheduler(                           # definisce lo scheduler del learning rate
     "linear",                                           # modalità della variazione
     optimizer=optimizer,                                # optimizer
-    num_warmup_steps=int (num_training_steps/10),        # cicli di warmup
-    num_training_steps=num_training_steps,
+    num_warmup_steps=int (num_steps/10),                # cicli di warmup
+    num_training_steps=num_steps,
 )
+
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu") #imposta il device, se esiste la GPU device è torch.device (“cuda”) 
 model.to(device) # trasferisce il modello sul device
-progress_bar = tqdm(range(num_training_steps))
+
+progress_bar = tqdm(range(num_steps))
 model.train() #imposta la modalità di funzionamento del modello
 
-
-
 for epoch in range(num_epochs):
-    for batch in train_dataloader:
+    start_time=time.time()
+    nbatch=1
+    batch_performance = {
+        "min_time":float("inf"),
+        "min_time_batch":nbatch,
+        "max_time":float("-inf"),
+        "max_time_batch":nbatch,
+        "min_loss":float("inf"),
+        "min_loss_batch":nbatch,
+        "max_loss":float("-inf"),
+        "max_loss_batch":nbatch
+     }
+   
+    print ("\n\nPre tokenization training ...")
+    for batch in pre_tokenize_train_dataloader:
+        batch_start_time=time.time()
         batch = {k: v.to(device) for k, v in batch.items()}
         outputs = model(**batch)
         loss = outputs.loss
@@ -70,4 +103,71 @@ for epoch in range(num_epochs):
         optimizer.step()
         lr_scheduler.step()
         optimizer.zero_grad()
-        progress_bar.update(1)
+        batch_time=time.time()-batch_start_time
+        if batch_time>batch_performance ["max_time"]:
+          batch_performance ["max_time"]=batch_time
+          batch_performance ["max_time_batch"]=nbatch
+        if batch_time<batch_performance ["min_time"]:
+          batch_performance ["min_time"]=batch_time
+          batch_performance ["min_time_batch"]=nbatch
+        if loss.item()<batch_performance ["min_loss"]:
+          batch_performance ["min_loss"]=loss.item()
+          batch_performance ["min_loss_batch"]=nbatch
+        if loss.item()>batch_performance ["max_loss"]:
+          batch_performance ["max_loss"]=loss.item()
+          batch_performance ["max_loss_batch"]=nbatch
+    
+        print (f'[{nbatch:5}] loss: {loss.item():.5f} min:{batch_performance["min_loss"]:.5f}({batch_performance["min_loss_batch"]:5}) max:{batch_performance["max_loss"]:.5f}({batch_performance["max_loss_batch"]:5})')
+        nbatch+=1
+         
+        # progress_bar.update(1)
+    pre_tokenize_batch_time=time.time()-start_time
+    print(f"Pre tokenization tempo richiesto per il training di un batch: {pre_tokenize_batch_time:.5f}")
+
+    start_time=time.time()
+    nbatch=1
+    
+    batch_performance = {
+        "min_time":float("inf"),
+        "min_time_batch":nbatch,
+        "max_time":float("-inf"),
+        "max_time_batch":nbatch,
+        "min_loss":float("inf"),
+        "min_loss_batch":nbatch,
+        "max_loss":float("-inf"),
+        "max_loss_batch":nbatch
+     }
+
+    print ("\n\nFly tokenization training ...")
+    for batch in on_fly_train_dataloader:
+        batch_start_time=time.time()
+        # Trasferisci il batch sulla GPU (se disponibile)
+        batch = {k: v.to(device) for k, v in batch.items()}
+
+        # Training step
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        batch_time=time.time()-batch_start_time
+        if batch_time>batch_performance ["max_time"]:
+          batch_performance ["max_time"]=batch_time
+          batch_performance ["max_time_batch"]=nbatch
+        if batch_time<batch_performance ["min_time"]:
+          batch_performance ["min_time"]=batch_time
+          batch_performance ["min_time_batch"]=nbatch
+        if loss.item()<batch_performance ["min_loss"]:
+          batch_performance ["min_loss"]=loss.item()
+          batch_performance ["min_loss_batch"]=nbatch
+        if loss.item()>batch_performance ["max_loss"]:
+          batch_performance ["max_loss"]=loss.item()
+          batch_performance ["max_loss_batch"]=nbatch
+        
+        nbatch+=1
+        print (f'[{nbatch:5}] loss: {loss.item():.5f} min:{batch_performance["min_loss"]:.5f}({batch_performance["min_loss_batch"]:5}) max:{batch_performance["max_loss"]:.5f}({batch_performance["max_loss_batch"]:5})')
+        
+       
+        on_fly_tokenize_batch_time=time.time()-start_time
+    print(f"Fly Tokenization tempo richiesto per il training di un batch: {on_fly_tokenize_batch_time:.5f}")
