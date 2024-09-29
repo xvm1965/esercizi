@@ -1,0 +1,73 @@
+import torch
+from tqdm.auto import tqdm
+from transformers import get_scheduler
+from transformers import AdamW
+from transformers import AutoModelForSequenceClassification
+from torch.utils.data import DataLoader
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+import time
+
+raw_datasets = load_dataset("SetFit/mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+num_epochs = 3 # imposta il numero di loop di training con lo stesso dataset
+batch_size=8 # dimensione del batch
+num_batches = raw_datasets["train"].num_rows//batch_size
+num_steps = num_batches * num_epochs # calcola il numero di steps 
+
+
+def tokenize_function(example):
+    return tokenizer(example["text1"], example["text2"], truncation=True)
+
+
+start_time=time.time()
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+pre_tokenize_tokenization_time=time.time()-start_time
+
+input ("\n\n premi un tasto ....")
+
+pre_tokenize_data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+start_time=time.time()
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+pre_tokenize_arrange_column_time=time.time()-start_time
+
+pre_tokenize_train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=pre_tokenize_data_collator
+)
+pre_tokenize_eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=pre_tokenize_data_collator
+)
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=5e-5)
+
+num_training_steps = num_epochs * len(pre_tokenize_train_dataloader) # calcola il numero di steps
+
+lr_scheduler = get_scheduler(                           # definisce lo scheduler del learning rate
+    "linear",                                           # modalità della variazione
+    optimizer=optimizer,                                # optimizer
+    num_warmup_steps=int (num_training_steps/10),        # cicli di warmup
+    num_training_steps=num_training_steps,
+)
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu") #imposta il device, se esiste la GPU device è torch.device (“cuda”) 
+model.to(device) # trasferisce il modello sul device
+progress_bar = tqdm(range(num_training_steps))
+model.train() #imposta la modalità di funzionamento del modello
+
+
+
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
