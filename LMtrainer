@@ -8,12 +8,12 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, DataCollatorWithPadding
 import time
 
-raw_datasets = load_dataset("SetFit/mrpc")
-checkpoint = "bert-base-uncased"
-tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+raw_datasets = load_dataset("SetFit/mrpc")     # carica il dataset
+checkpoint = "bert-base-uncased"               # carica il modello
+tokenizer = AutoTokenizer.from_pretrained(checkpoint) # carica il tokenizer
 num_epochs = 3 # imposta il numero di loop di training con lo stesso dataset
 batch_size=8 # dimensione del batch
-num_batches = raw_datasets["train"].num_rows//batch_size
+num_batches = raw_datasets["train"].num_rows//batch_size # calcola il numero di batches
 num_steps = num_batches * num_epochs # calcola il numero di steps 
 
 
