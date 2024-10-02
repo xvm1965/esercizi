@@ -135,7 +135,7 @@ if False:
 # Seconda esecuzione con tokenizzazione precomputata
 
 tokenized_datasets = raw_datasets.map(lambda x: tokenizer(x["sentence1"], x["sentence2"], truncation=True, padding=True), batched=True)
-#tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
 tokenized_datasets.rename_column("label", "labels")
 tokenized_datasets.set_format("torch")
 train_dataloader = DataLoader(tokenized_datasets["train"], shuffle=True, batch_size=batch_size, collate_fn=DataCollatorWithPadding(tokenizer))
