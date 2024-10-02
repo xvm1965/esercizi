@@ -14,13 +14,13 @@ checkpoint = "bert-base-uncased"
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 batch_size = 8
 num_epochs = 3
-warmup_steps = 100
+warmup_steps = int((len (raw_datasets["train"])*0.1) /batch_size)
 
 # Definisce il device
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 def get_status(unchanging_batches_count, warmup_steps, moving_avg, strategy, epoch, nbatch, loss, min_loss, min_loss_batch, min_loss_epoch, min_loss_strategy, batch_start_time, start_time):
-    status = f"({unchanging_batches_count:3}/{warmup_steps:3} movavg: {moving_avg:.5f})"
+    status = f"{unchanging_batches_count:3}/{warmup_steps:3} movavg: {moving_avg:.5f} delta: { 100*abs((moving_avg-loss.item())/moving_avg):5.2f} "
     status += f"{strategy} - epoch: {epoch} batch: {nbatch:3} "
     status += f"loss: {loss.item():.5f} min:{min_loss:.5f}({min_loss_batch:3}/{min_loss_epoch:1}/{min_loss_strategy}) "
     status += f"time: {time.time()-batch_start_time:2.5f} avg:{(time.time()-start_time)/(nbatch):.5f}"
@@ -62,14 +62,14 @@ def train_and_validate(train_dataloader, validation_dataloader, strategy):
             loss_history.append(loss.item())
             if len(loss_history) > warmup_steps:
                 loss_history.pop(0)
+            
+            moving_avg = sum(loss_history) / min (warmup_steps, nbatch)
+            delta = abs((moving_avg-loss.item())/moving_avg)
+            if delta < 0.01:
+                unchanging_batches_count += 1
+            else:
+                unchanging_batches_count = 0
 
-            if len(loss_history) == warmup_steps:
-                moving_avg = sum(loss_history) / warmup_steps
-                if abs((moving_avg - prev_moving_avg) / prev_moving_avg) < 0.01:
-                    unchanging_batches_count += 1
-                else:
-                    unchanging_batches_count = 0
-                prev_moving_avg = moving_avg
 
             if loss.item() < min_loss:
                 min_loss = loss.item()
@@ -79,7 +79,7 @@ def train_and_validate(train_dataloader, validation_dataloader, strategy):
 
             print(get_status(unchanging_batches_count, warmup_steps, moving_avg, strategy, epoch, nbatch, loss, min_loss, min_loss_batch, min_loss_epoch, strategy, batch_start_time, start_time))
 
-            if unchanging_batches_count >= warmup_steps:
+            if len (loss_history)==warmup_steps and unchanging_batches_count >= warmup_steps:
                 break
 
             nbatch += 1
@@ -129,16 +129,15 @@ validation_dataloader = DataLoader(
         'labels': torch.tensor([item["label"] for item in x])
     }
 )
-if False:
-  train_and_validate(train_dataloader, validation_dataloader, "Fly")
+train_and_validate(train_dataloader, validation_dataloader, "Fly")
 
 # Seconda esecuzione con tokenizzazione precomputata
+tokenized_datasets = raw_datasets.map(lambda x: tokenizer(x["sentence1"], x["sentence2"], truncation=True, padding=True), batched=True)
 
 tokenized_datasets = raw_datasets.map(lambda x: tokenizer(x["sentence1"], x["sentence2"], truncation=True, padding=True), batched=True)
-tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
-tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"]) # Remove inplace argument
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
 tokenized_datasets.set_format("torch")
 train_dataloader = DataLoader(tokenized_datasets["train"], shuffle=True, batch_size=batch_size, collate_fn=DataCollatorWithPadding(tokenizer))
 validation_dataloader = DataLoader(tokenized_datasets["validation"], batch_size=batch_size, collate_fn=DataCollatorWithPadding(tokenizer))
 train_and_validate(train_dataloader, validation_dataloader, "Pre")
-
