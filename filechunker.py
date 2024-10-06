@@ -30,7 +30,7 @@ if os.path.exists(repo_dir):
     !rm -rf {repo_dir}
 
 # Clona il repository
-# github_token = input ("Github token: ")
+github_token = input ("Github token: ")
 
 username = "xvm1965"
 repo = "docs"
