@@ -1,5 +1,8 @@
 import importlib.util
 import os
+import spacy
+import PyPDF2
+import subprocess
 
 # Funzione per verificare se un pacchetto è installato
 def install_if_needed(package_name):
@@ -11,8 +14,29 @@ def install_if_needed(package_name):
 
 # Verifica e installa PyPDF2 se necessario
 install_if_needed('PyPDF2')
+install_if_needed('transformers')
 
-import PyPDF2
+
+# Carica il modello di linguaggio di spaCy per l'italiano
+# Funzione per verificare se un modello spaCy è già installato
+def model_installed(model_name):
+    try:
+        # Controlla se il modello è installato eseguendo un comando spaCy
+        subprocess.check_output(f"python -m spacy validate", shell=True)
+        return model_name in subprocess.check_output(f"python -m spacy validate", shell=True).decode()
+    except subprocess.CalledProcessError:
+        return False
+
+# Verifica se il modello 'it_core_news_sm' è già installato, altrimenti installalo
+model_name = "it_core_news_sm"
+if not model_installed(model_name):
+    print(f"Scaricamento del modello '{model_name}'...")
+    !python -m spacy download {model_name}
+else:
+    print(f"Il modello '{model_name}' è già installato.")
+
+
+nlp = spacy.load('it_core_news_sm')
 
 # Definisci il tuo token GitHub
 github_token = "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"
@@ -29,6 +53,13 @@ else:
     # Esegui il pull per aggiornare la copia locale se la directory esiste già
     print(f"La directory '{repo}' esiste già. Eseguo git pull per aggiornare i file...")
     !git -C {repo} pull
+
+
+# Funzione per suddividere il testo in frasi con spaCy
+def split_text_into_sentences(text):
+    doc = nlp(text)
+    sentences = [sent.text.strip() for sent in doc.sents]  # Suddividi il testo in frasi
+    return sentences
 
 # Funzione per estrarre il testo dai PDF
 def extract_text_from_pdf(pdf_path):
@@ -50,4 +81,9 @@ pdf_files = [f for f in os.listdir(repo_dir) if f.endswith('.pdf')]
 for pdf_file in pdf_files:
     pdf_path = os.path.join(repo_dir, pdf_file)
     text = extract_text_from_pdf(pdf_path)
-    print(f"\nPrimi 300 caratteri di {pdf_file}:\n{text[:300]}")
+    # Suddividi il testo in frasi
+    sentences = split_text_into_sentences(text)
+    for j, s in enumerate(sentences):
+      print(f"[{j+1:2}] - {s}")
+      if j//10==0:break
+    print()
